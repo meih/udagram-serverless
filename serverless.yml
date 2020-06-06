@@ -5,6 +5,7 @@ service:
 #org: your-org-name
 
 custom:
+  topicName: imagesTopic-${self:provider.stage}
   webpack:
     webpackConfig: ./webpack.config.js
     includeModules: true
@@ -38,7 +39,10 @@ provider:
     GROUPS_TABLE: Groups-${self:provider.stage}
     IMAGES_TABLE: Images-${self:provider.stage}
     IMAGE_ID_INDEX: ImageIdIndex
-  
+    IMAGES_S3_BUCKET: serverless-udagram-images-meiko-${self:provider.stage}
+    CONNECTIONS_TABLE: Connections-${self:provider.stage}
+    SIGNED_URL_EXPIRATION: 300
+    THUMBNAILS_S3_BUCKET: serverless-udagram-thumbnail-meiko-${self:provider.stage}
   stage: ${opt:stage, 'dev'}
   region: ${opt:region, 'us-east-1'}
 
@@ -58,6 +62,11 @@ provider:
       Action:
         - dynamodb:Query
       Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.IMAGES_TABLE}/index/${self:provider.environment.IMAGE_ID_INDEX}
+    - Effect: Allow
+      Action:
+        - s3:PutObject
+        - s3:GetObject
+      Resource: arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}/*
 
 functions:
   GetGroups:
@@ -146,3 +155,71 @@ resources:
           Ref: ApiGatewayRestApi
         ValidateRequestBody: true
         ValidateRequestParameters: false
+
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+#      DependsOn: SNSTopicPolicy
+      Properties:
+        BucketName: ${self:provider.environment.IMAGES_S3_BUCKET}
+#        NotificationConfiguration:
+#          TopicConfigurations:
+#            - Event: s3:ObjectCreated:Put
+#              Topic: !Ref ImagesTopic
+        CorsConfiguration:
+          CorsRules:
+            -
+              AllowedOrigins:
+                - '*'
+              AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+
+    BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        PolicyDocument:
+          Id: MyPolicy
+          Version: "2012-10-17"
+          Statement:
+            - Sid: PublicReadForGetBucketObjects
+              Effect: Allow
+              Principal: '*'
+              Action: 's3:GetObject'
+              Resource: 'arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}/*'
+        Bucket: !Ref AttachmentsBucket
+
+    # SNSTopicPolicy:
+    #   Type: AWS::SNS::TopicPolicy
+    #   Properties:
+    #     PolicyDocument:
+    #       Version: "2012-10-17"
+    #       Statement:
+    #         - Effect: Allow
+    #           Principal:
+    #             AWS: "*"
+    #           Action: sns:Publish
+    #           Resource:
+    #             !Ref ImagesTopic
+    #           Condition:
+    #             ArnLike:
+    #               AWS:SourceArn: arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}
+    #     Topics:
+    #       - !Ref ImagesTopic
+
+    # ThumbnailsBucket:
+    #   Type: AWS::S3::Bucket
+    #   Properties:
+    #     BucketName: ${self:provider.environment.THUMBNAILS_S3_BUCKET}
+
+    # ImagesTopic:
+    #   Type: AWS::SNS::Topic
+    #   Properties:
+    #     DisplayName: Image bucket topic
+    #     TopicName: ${self:custom.topicName}
+  
