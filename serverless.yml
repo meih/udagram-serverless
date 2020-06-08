@@ -67,6 +67,12 @@ provider:
         - s3:PutObject
         - s3:GetObject
       Resource: arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}/*
+    - Effect: Allow
+      Action:
+        - dynamodb:Scan
+        - dynamodb:PutItem
+        - dynamodb:DeleteItem
+      Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.CONNECTIONS_TABLE}
 
 functions:
   GetGroups:
@@ -92,7 +98,7 @@ functions:
     events:
       - http:
           method: get
-          path: gruops/{groupId}/images
+          path: groups/{groupId}/images
           cors: true
   CreateImage:
     handler: src/lambda/http/createImage.handler
@@ -107,6 +113,34 @@ functions:
             description: Create a new image
             requestModels:
               'application/json': ImageRequest
+  SendUploadNotifications:
+    environment:
+      STAGE: ${self:provider.stage}
+      API_ID:
+        Ref: WebsocketsApi
+    handler: src/lambda/s3/sendNotifications.handler
+    events:
+      - sns:
+          arn:
+            Fn::Join:
+              - ':'
+              - - arn:aws:sns
+                - Ref: AWS::Region
+                - Ref: AWS::AccountId
+                - ${self:custom.topicName}
+          topicName: ${self:custom.topicName}
+
+  ConnectHandler:
+    handler: src/lambda/websocket/connect.handler
+    events:
+      - websocket:
+          route: $connect
+
+  DisconnectHandler:
+    handler: src/lambda/websocket/disconnect.handler
+    events:
+      - websocket:
+          route: $disconnect
 
 resources:
   Resources:
@@ -147,6 +181,20 @@ resources:
             Projection:
               ProjectionType: ALL    
 
+    WebSocketConnectionsDynamoDBTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          -
+            AttributeName: id
+            AttributeType: S
+        KeySchema:
+          -
+            AttributeName: id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.CONNECTIONS_TABLE}
+
     RequestBodyValidator:
       Type: AWS::ApiGateway::RequestValidator
       Properties:
@@ -162,9 +210,13 @@ resources:
       Properties:
         BucketName: ${self:provider.environment.IMAGES_S3_BUCKET}
 #        NotificationConfiguration:
-#          TopicConfigurations:
-#            - Event: s3:ObjectCreated:Put
-#              Topic: !Ref ImagesTopic
+#          LambdaConfigurations:
+#            - Event: s3:ObjectCreated:*
+#              Function: !GetAtt SendUploadNotificationsLambdaFunction.Arn
+        NotificationConfiguration:
+          TopicConfigurations:
+            - Event: s3:ObjectCreated:Put
+              Topic: !Ref ImagesTopic
         CorsConfiguration:
           CorsRules:
             -
@@ -180,6 +232,15 @@ resources:
                 - HEAD
               MaxAge: 3000
 
+    SendUploadNotificationsPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !Ref SendUploadNotificationsLambdaFunction
+        Principal: s3.amazonaws.com
+        Action: lambda:InvokeFunction
+        SourceAccount: !Ref AWS::AccountId
+        SourceArn: arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}
+
     BucketPolicy:
       Type: AWS::S3::BucketPolicy
       Properties:
@@ -194,32 +255,32 @@ resources:
               Resource: 'arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}/*'
         Bucket: !Ref AttachmentsBucket
 
-    # SNSTopicPolicy:
-    #   Type: AWS::SNS::TopicPolicy
-    #   Properties:
-    #     PolicyDocument:
-    #       Version: "2012-10-17"
-    #       Statement:
-    #         - Effect: Allow
-    #           Principal:
-    #             AWS: "*"
-    #           Action: sns:Publish
-    #           Resource:
-    #             !Ref ImagesTopic
-    #           Condition:
-    #             ArnLike:
-    #               AWS:SourceArn: arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}
-    #     Topics:
-    #       - !Ref ImagesTopic
+    SNSTopicPolicy:
+      Type: AWS::SNS::TopicPolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                AWS: "*"
+              Action: sns:Publish
+              Resource:
+                !Ref ImagesTopic
+              Condition:
+                ArnLike:
+                  AWS:SourceArn: arn:aws:s3:::${self:provider.environment.IMAGES_S3_BUCKET}
+        Topics:
+          - !Ref ImagesTopic
 
     # ThumbnailsBucket:
     #   Type: AWS::S3::Bucket
     #   Properties:
     #     BucketName: ${self:provider.environment.THUMBNAILS_S3_BUCKET}
 
-    # ImagesTopic:
-    #   Type: AWS::SNS::Topic
-    #   Properties:
-    #     DisplayName: Image bucket topic
-    #     TopicName: ${self:custom.topicName}
+    ImagesTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        DisplayName: Image bucket topic
+        TopicName: ${self:custom.topicName}
   
